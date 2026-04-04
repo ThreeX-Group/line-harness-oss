@@ -7,7 +7,7 @@ workers_dev = true
 # デフォルト = テスト環境
 # 使い方: npx wrangler deploy
 # ═══════════════════════════════════════════════════════════════
-account_id = "YOUR_DEV_ACCOUNT_ID"
+account_id = "e47e236a4898fb271784ea90a9fad64c"
 
 [assets]
 directory = "dist/client"
@@ -16,7 +16,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "line-harness"
-database_id = "YOUR_DEV_D1_DATABASE_ID"
+database_id = "09b29c6c-34e7-4f19-b2fe-dac77ce3d11d"
 
 [[r2_buckets]]
 binding = "IMAGES"

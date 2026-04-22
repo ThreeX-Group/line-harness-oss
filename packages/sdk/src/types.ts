@@ -255,6 +255,8 @@ export interface TrackedLink {
   trackingUrl: string
   tagId: string | null
   scenarioId: string | null
+  introTemplateId: string | null
+  rewardTemplateId: string | null
   isActive: boolean
   clickCount: number
   createdAt: string
@@ -277,6 +279,17 @@ export interface CreateTrackedLinkInput {
   originalUrl: string
   tagId?: string | null
   scenarioId?: string | null
+  introTemplateId?: string | null
+  rewardTemplateId?: string | null
+}
+
+export interface UpdateTrackedLinkInput {
+  name?: string
+  tagId?: string | null
+  scenarioId?: string | null
+  introTemplateId?: string | null
+  rewardTemplateId?: string | null
+  isActive?: boolean
 }
 
 // ─── Forms ──────────────────────────────────────────────
@@ -453,4 +466,62 @@ export interface UploadImageInput {
   mimeType?: string
   /** Optional original filename */
   filename?: string
+}
+
+// ─── Conversations ──────────────────────────────────────
+export type MessageSource = 'user' | 'broadcast' | 'scenario' | 'auto_reply' | 'reminder' | 'manual'
+
+export interface ConversationSummary {
+  friendId: string
+  lineUserId: string
+  displayName: string | null
+  lineAccountId: string | null
+  lineAccountName: string | null
+  lastIncomingAt: string
+  hoursSince: number
+  lastIncomingPreview: string | null
+  lastIncomingType: string | null
+  tags: string[]
+}
+
+export interface ConversationListParams {
+  lineAccountId?: string
+  minHoursSince?: number
+  maxHoursSince?: number
+  limit?: number
+  offset?: number
+}
+
+export interface ConversationListResponse {
+  total: number
+  items: ConversationSummary[]
+}
+
+export interface ConversationMessage {
+  id: string
+  direction: 'incoming' | 'outgoing'
+  messageType: string
+  content: string
+  deliveryType: string | null
+  source: MessageSource
+  createdAt: string
+}
+
+export interface ConversationDetail {
+  friend: {
+    friendId: string
+    lineUserId: string
+    displayName: string | null
+    lineAccountId: string | null
+    lineAccountName: string | null
+    isFollowing: boolean
+    tags: string[]
+  }
+  messages: ConversationMessage[]
+}
+
+export interface GetConversationParams {
+  friendId: string
+  limit?: number
+  before?: string
 }

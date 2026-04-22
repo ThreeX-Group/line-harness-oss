@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS friends (
   status_message   TEXT,
   is_following     INTEGER NOT NULL DEFAULT 1,
   user_id          TEXT,
+  ig_igsid         TEXT,
   score            INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS friends (
 
 CREATE INDEX IF NOT EXISTS idx_friends_line_user_id ON friends (line_user_id);
 CREATE INDEX IF NOT EXISTS idx_friends_user_id ON friends (user_id);
+CREATE INDEX IF NOT EXISTS idx_friends_ig_igsid ON friends (ig_igsid);
 
 -- ============================================================
 -- Tags
@@ -80,7 +82,7 @@ CREATE TABLE IF NOT EXISTS friend_scenarios (
   friend_id          TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
   scenario_id        TEXT NOT NULL REFERENCES scenarios (id) ON DELETE CASCADE,
   current_step_order INTEGER NOT NULL DEFAULT 0,
-  status             TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed')) DEFAULT 'active',
+  status             TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'delivering')) DEFAULT 'active',
   started_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   next_delivery_at   TEXT,
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
@@ -89,6 +91,7 @@ CREATE TABLE IF NOT EXISTS friend_scenarios (
 CREATE INDEX IF NOT EXISTS idx_friend_scenarios_next_delivery_at ON friend_scenarios (next_delivery_at);
 CREATE INDEX IF NOT EXISTS idx_friend_scenarios_status ON friend_scenarios (status);
 CREATE INDEX IF NOT EXISTS idx_friend_scenarios_friend_id ON friend_scenarios (friend_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_scenarios_unique ON friend_scenarios (friend_id, scenario_id) WHERE status != 'completed';
 
 -- ============================================================
 -- Broadcasts
@@ -107,10 +110,25 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   success_count   INTEGER NOT NULL DEFAULT 0,
   line_request_id   TEXT,
   aggregation_unit  TEXT,
+  batch_offset    INTEGER NOT NULL DEFAULT 0,
+  segment_conditions TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
+
+-- ============================================================
+--- Account Settings
+--- ============================================================
+CREATE TABLE IF NOT EXISTS account_settings (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  key             TEXT NOT NULL,
+  value           TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(line_account_id, key)
+);
 
 -- ============================================================
 -- Broadcast Insights
@@ -145,12 +163,15 @@ CREATE TABLE IF NOT EXISTS messages_log (
   content          TEXT NOT NULL,
   broadcast_id     TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
   scenario_step_id TEXT REFERENCES scenario_steps (id) ON DELETE SET NULL,
-  delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply')),
+  delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
+  source           TEXT,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_log_friend_id ON messages_log (friend_id);
 CREATE INDEX IF NOT EXISTS idx_messages_log_created_at ON messages_log (created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_log_friend_source ON messages_log (friend_id, source);
+CREATE INDEX IF NOT EXISTS idx_messages_log_friend_direction_created ON messages_log (friend_id, direction, created_at);
 
 -- ============================================================
 -- Auto Replies
@@ -580,3 +601,23 @@ CREATE TABLE IF NOT EXISTS staff_members (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
+
+-- Reusable message templates (text or Flex) for reward messages in campaigns
+CREATE TABLE IF NOT EXISTS message_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  message_type TEXT NOT NULL CHECK (message_type IN ('text', 'flex')),
+  message_content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Pool accounts — multiple LINE accounts per traffic pool for distribution
+CREATE TABLE IF NOT EXISTS pool_accounts (
+  id TEXT PRIMARY KEY,
+  pool_id TEXT NOT NULL REFERENCES traffic_pools(id) ON DELETE CASCADE,
+  line_account_id TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(pool_id, line_account_id)
+);

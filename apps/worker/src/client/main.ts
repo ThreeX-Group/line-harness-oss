@@ -115,18 +115,44 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
   `;
 
   // 友だち追加後に戻ってきたら自動で再チェック
-  document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible') {
-      try {
-        const { friendFlag } = await liff.getFriendship();
-        if (friendFlag) {
-          showCompletion(profile, false);
-        }
-      } catch {
-        // ignore
+  // 一度発火したら listener を外して、ユーザーが LIFF をフォアグラウンド復帰するたびに
+  // 重複 push が走らないようにする（送信後にアプリ切り替えで再発火する事故を防ぐ）
+  let formLinkSent = false;
+  const onVisibilityChange = async () => {
+    if (document.visibilityState !== 'visible') return;
+    try {
+      const { friendFlag } = await liff.getFriendship();
+      if (!friendFlag) return;
+
+      // Send form link if form param exists (was lost during friend-add flow)
+      const formParam = new URLSearchParams(window.location.search).get('form');
+      if (formParam && !formLinkSent) {
+        formLinkSent = true;
+        try {
+          const fp = await liff.getProfile();
+          const idToken = liff.getIDToken();
+          const params = new URLSearchParams(window.location.search);
+          await apiCall('/api/liff/send-form-link', {
+            method: 'POST',
+            body: JSON.stringify({
+              lineUserId: fp.userId,
+              formId: formParam,
+              idToken: idToken || '',
+              ref: params.get('ref') || '',
+              gate: params.get('gate') || '',
+              xh: params.get('xh') || '',
+              ig: params.get('ig') || '',
+            }),
+          });
+        } catch { /* best-effort */ }
       }
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      showCompletion(profile, false);
+    } catch {
+      // ignore
     }
-  });
+  };
+  document.addEventListener('visibilitychange', onVisibilityChange);
 }
 
 function showCompletion(profile: { displayName: string; pictureUrl?: string }, isRecovery: boolean) {
@@ -186,6 +212,7 @@ async function linkAndAddFlow() {
     ]);
 
     // 1. UUID linking (always, regardless of friendship)
+    const linkParams = new URLSearchParams(window.location.search);
     const linkPromise = apiCall('/api/liff/link', {
       method: 'POST',
       body: JSON.stringify({
@@ -193,6 +220,7 @@ async function linkAndAddFlow() {
         displayName: profile.displayName,
         existingUuid: existingUuid,
         ref: ref,
+        ig: linkParams.get('ig') || '',
       }),
     }).then(async (res) => {
       if (res.ok) {
@@ -243,11 +271,18 @@ async function linkAndAddFlow() {
       if (formParam) {
         // Send form link via push message, then show completion
         try {
+          const idToken = liff.getIDToken();
+          const params = new URLSearchParams(window.location.search);
           await apiCall('/api/liff/send-form-link', {
             method: 'POST',
             body: JSON.stringify({
               lineUserId: profile.userId,
               formId: formParam,
+              idToken: idToken || '',
+              ref: ref || '',
+              gate: params.get('gate') || '',
+              xh: params.get('xh') || '',
+              ig: params.get('ig') || '',
             }),
           });
         } catch { /* best-effort */ }
@@ -296,21 +331,7 @@ async function main() {
       const formId = params.get('id');
       await initForm(formId);
     } else if (!page) {
-      // Check for ?form=xxx shorthand (from /auth/line?form=xxx flow)
-      const params = new URLSearchParams(window.location.search);
-      const formParam = params.get('form');
-      if (formParam) {
-        // Ensure user is a friend before showing form
-        const { friendFlag } = await liff.getFriendship();
-        if (!friendFlag) {
-          const profile = await liff.getProfile();
-          showFriendAdd(profile);
-          return;
-        }
-        await initForm(formParam);
-      } else {
-        await linkAndAddFlow();
-      }
+      await linkAndAddFlow();
     } else {
       await linkAndAddFlow();
     }

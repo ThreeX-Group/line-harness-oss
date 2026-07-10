@@ -283,7 +283,7 @@ async function handleEvent(
                 const resolved = await resolveStepContent(db, firstStep);
                 const { resolveMetadata } = await import('../services/step-delivery.js');
                 const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-                const expandedContent = expandVariables(resolved.messageContent, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
+                const expandedContent = expandVariables(resolved.messageContent, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], undefined, resolved.messageType);
                 const message = buildMessage(resolved.messageType, expandedContent);
                 await lineClient.replyMessage(event.replyToken, [message]);
                 console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
@@ -430,7 +430,7 @@ async function handleEvent(
             response_type: rule.response_type,
             response_content: rule.response_content,
           });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
+          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
 
@@ -516,6 +516,11 @@ async function handleEvent(
       )
       .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, jstNow())
       .run();
+    // text と同様、非 text の自発メッセージ (画像/スタンプ等) でも chat を unread に戻す。
+    // これが無いと resolved 除外 (unanswered-inbox CANDIDATES_SQL) が「解決済み後に
+    // 画像だけ送ってきた友だち」をバッジ・未対応一覧から永久に落としてしまう。
+    // 非 text は auto_reply keyword にマッチし得ないので常に要対応扱いで正しい。
+    await upsertChatOnMessage(db, friend.id);
     return;
   }
 
@@ -635,7 +640,7 @@ async function handleEvent(
             response_type: rule.response_type,
             response_content: rule.response_content,
           });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
+          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
           replyTokenConsumed = true;

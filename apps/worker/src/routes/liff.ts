@@ -434,6 +434,15 @@ liffRoutes.get('/auth/line', async (c) => {
   if (igParam) qrParams.set('ig', igParam);
   if (igaParam) qrParams.set('iga', igaParam);
   if (iganParam) qrParams.set('igan', iganParam);
+  // Ad click IDs + UTM — without these the PC/QR path loses ad attribution
+  // (same params /auth/line already reads for the OAuth state).
+  if (gclid) qrParams.set('gclid', gclid);
+  if (fbclid) qrParams.set('fbclid', fbclid);
+  if (twclid) qrParams.set('twclid', twclid);
+  if (ttclid) qrParams.set('ttclid', ttclid);
+  if (utmSource) qrParams.set('utm_source', utmSource);
+  if (utmMedium) qrParams.set('utm_medium', utmMedium);
+  if (utmCampaign) qrParams.set('utm_campaign', utmCampaign);
   const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
 
   // Mobile: route through /r/:ref so users get the OS-aware landing page

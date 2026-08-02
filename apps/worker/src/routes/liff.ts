@@ -20,6 +20,8 @@ import {
   getAffiliateLinkByRefCode,
   getAffiliateOfferById,
   getAffiliateById,
+  getScenarios,
+  enrollFriendInScenario,
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
@@ -28,6 +30,19 @@ import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import type { Env } from '../index.js';
+
+
+// OAuth state base64 helpers. btoa() only accepts Latin-1, so a single
+// multibyte query param (e.g. utm_campaign=夏キャンペーン) used to throw
+// InvalidCharacterError and turn the whole /auth/line request into a 500.
+// Encode via UTF-8 bytes instead. decodeState is byte-compatible with
+// states produced by the old plain btoa (ASCII-only payloads).
+function encodeState(state: string): string {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(state)));
+}
+function decodeState(encoded: string): string {
+  return new TextDecoder().decode(Uint8Array.from(atob(encoded), (ch) => ch.charCodeAt(0)));
+}
 
 const liffRoutes = new Hono<Env>();
 
@@ -394,7 +409,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
   const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
-  const encodedState = btoa(state);
+  const encodedState = encodeState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
   loginUrl.searchParams.set('client_id', channelId);
@@ -553,7 +568,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
     iga: igaParam, igan: iganParam,
   });
-  const encodedState = btoa(state);
+  const encodedState = encodeState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
   loginUrl.searchParams.set('client_id', channelId);
@@ -594,7 +609,7 @@ liffRoutes.get('/auth/callback', async (c) => {
   let igaParam = '';
   let iganParam = '';
   try {
-    const parsed = JSON.parse(atob(stateParam));
+    const parsed = JSON.parse(decodeState(stateParam));
     ref = parsed.ref || '';
     redirect = parsed.redirect || '';
     formId = parsed.form || '';
@@ -846,96 +861,53 @@ liffRoutes.get('/auth/callback', async (c) => {
       !referralRouteForOverride || referralRouteForOverride.run_account_friend_add_scenarios !== 0;
 
     try {
-      const { getScenarios, enrollFriendInScenario: enroll, getScenarioSteps } = await import('@line-crm/db');
-      const { LineClient } = await import('@line-crm/line-sdk');
-      const { buildMessage, expandVariables } = await import('../services/step-delivery.js');
-
       // Resolve which account this friend belongs to
       const matchedAccountId = accountParam
         ? (await getLineAccountByChannelId(db, accountParam))?.id ?? null
         : null;
 
-      // Get access token for this account
-      let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-      if (accountParam) {
-        const acct = await getLineAccountByChannelId(db, accountParam);
-        if (acct) accessToken = acct.channel_access_token;
-      }
-      const lineClient = new LineClient(accessToken);
-
-      const {
-        computeNextDeliveryAt: computeNextLiff,
-        resolveStepContent: resolveStepLiff,
-        addTagToFriend: addTagLiff,
-      } = await import('@line-crm/db');
       const scenarios = runAccountScenariosLiff ? await getScenarios(db) : [];
       for (const scenario of scenarios) {
         const scenarioAccountMatch = !scenario.line_account_id || !matchedAccountId || scenario.line_account_id === matchedAccountId;
-        if (scenario.trigger_type === 'friend_add' && scenario.is_active && scenarioAccountMatch) {
-          const enrollment = await enroll(db, friend.id, scenario.id);
+        if (scenario.trigger_type !== 'friend_add' || !scenario.is_active || !scenarioAccountMatch) {
+          continue;
+        }
+        // Per-scenario isolation (matching the follow webhook's loop): one
+        // failing enroll/push must not skip the remaining scenarios.
+        try {
+          // Never re-enroll via the OAuth path. The friend_scenarios partial
+          // UNIQUE only blocks non-completed rows (WHERE status != 'completed'),
+          // so an existing friend re-running OAuth login (e.g. via a form link)
+          // would get a completed enrollment re-created and the welcome
+          // sequence re-sent. Re-sends on genuine re-adds (unblock → follow)
+          // are the follow webhook's job. Friends with no enrollment history
+          // (OAuth beat the webhook, message-first friends, migrated bases)
+          // still enroll here — this is their only friend_add entry.
+          const priorEnrollment = await db
+            .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
+            .bind(friend.id, scenario.id)
+            .first();
+          if (priorEnrollment) continue;
+          const enrollment = await enrollFriendInScenario(db, friend.id, scenario.id);
           if (enrollment) {
-            // 即時送信は scenario.delivery_mode を踏まえて「now 以前にスケジュールされる」場合のみ。
-            // (relative+0min / elapsed+0d0m / absolute_time の過去時刻)
-            const steps = await getScenarioSteps(db, scenario.id);
-            const firstStep = steps[0];
-            if (firstStep) {
-              const enrolledAtJst = new Date(Date.now() + 9 * 60 * 60_000);
-              const firstScheduledAt = computeNextLiff(
-                { delivery_mode: scenario.delivery_mode ?? 'relative' },
-                firstStep,
-                { enrolledAt: enrolledAtJst, previousDeliveredAt: enrolledAtJst, now: enrolledAtJst },
-              );
-              if (firstScheduledAt.getTime() <= enrolledAtJst.getTime()) {
-                // Resolve template_id → templates table (参照型)
-                const resolved = await resolveStepLiff(db, firstStep);
-                const { resolveMetadata: resolveMetaLiff, messageToLogPayload } = await import('../services/step-delivery.js');
-                const resolvedMetaLiff = await resolveMetaLiff(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-                const expandedContent = expandVariables(
-                  resolved.messageContent,
-                  { ...friend, metadata: resolvedMetaLiff } as Parameters<typeof expandVariables>[1],
-                  c.env.WORKER_URL,
-                  resolved.messageType,
-                );
-                // 1:1 push → /t リンクに f=<friendId> を焼き込み (LIFF 識別ホップ回避)
-                const { appendFriendToTrackedLinks } = await import('../services/auto-track.js');
-                const decoratedContent = await appendFriendToTrackedLinks(
-                  db, expandedContent, c.env.WORKER_URL, friend.id,
-                );
-                const pushedMessage = buildMessage(resolved.messageType, decoratedContent);
-                await lineClient.pushMessage(lineUserId, [pushedMessage]);
-
-                // messages_log への記録 (到達率分母に含めるため)
-                const oauthLogPayload = messageToLogPayload(pushedMessage);
-                const nowIso = new Date(Date.now() + 9 * 60 * 60_000)
-                  .toISOString()
-                  .slice(0, -1) + '+09:00';
-                await db
-                  .prepare(
-                    `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
-                     VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'scenario', ?, ?)`,
-                  )
-                  .bind(
-                    crypto.randomUUID(),
-                    friend.id,
-                    oauthLogPayload.messageType,
-                    oauthLogPayload.content,
-                    firstStep.id,
-                    resolved.templateIdAtSend,
-                    nowIso,
-                  )
-                  .run();
-
-                // 到達タグ付与 (push 後)
-                if (firstStep.on_reach_tag_id) {
-                  try {
-                    await addTagLiff(db, friend.id, firstStep.on_reach_tag_id);
-                  } catch (err) {
-                    console.error(`[scenario] tag attach failed step=${firstStep.id}:`, err);
-                  }
-                }
-              }
-            }
+            // Instant welcome via the unified service ('once' mode): claims
+            // the fresh row, then advances it so the cron never re-sends
+            // step 1. lineUserId comes from the verified id_token, so the
+            // push works even before friend.line_user_id is fully wired.
+            await pushImmediateFirstStep(
+              db,
+              friend.id,
+              scenario.id,
+              {
+                defaultAccessToken: c.env.LINE_CHANNEL_ACCESS_TOKEN,
+                workerUrl: c.env.WORKER_URL,
+                accountChannelId: accountParam || null,
+              },
+              { enrollment, targetLineUserId: lineUserId },
+            );
           }
+        } catch (err) {
+          console.error(`OAuth friend_add enrollment failed scenario=${scenario.id}:`, err);
         }
       }
     } catch (err) {

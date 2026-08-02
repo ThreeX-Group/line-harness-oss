@@ -16,7 +16,8 @@ import {
 } from '@line-crm/db';
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
-import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { matchAndReply } from '../services/auto-reply.js';
+import { buildMessage } from '../services/step-delivery.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
 import type { Env } from '../index.js';
 
@@ -344,25 +345,10 @@ async function handleEvent(
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
 
-    // Match postback data against auto_replies (exact match on keyword)
-    const autoReplyQuery = lineAccountId
-      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
-      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
-    const autoReplyStmt = db.prepare(autoReplyQuery);
-    const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
-      .all<{
-        id: string;
-        keyword: string;
-        match_type: 'exact' | 'contains';
-        response_type: string;
-        response_content: string;
-        template_id: string | null;
-      }>();
-
     // postback の incoming 自体を messages_log に記録する。Rich Menu のタップで
-     // 利用者が "コスト比較" などのアクションを起こした事実を chat 履歴で可視化する。
-     // delivery_type='push' は厳密には push ではないが、incoming/non-test として
-     // 既存 chat list / 詳細 SQL のフィルタを通すための妥当な値 (auto_reply text 同様)。
+    // 利用者が "コスト比較" などのアクションを起こした事実を chat 履歴で可視化する。
+    // delivery_type='push' は厳密には push ではないが、incoming/non-test として
+    // 既存 chat list / 詳細 SQL のフィルタを通すための妥当な値 (auto_reply text 同様)。
     try {
       await db
         .prepare(
@@ -375,41 +361,29 @@ async function handleEvent(
       console.error('Failed to log incoming postback', err);
     }
 
-    for (const rule of autoReplies.results) {
-      const isMatch = rule.match_type === 'exact'
-        ? postbackData === rule.keyword
-        : postbackData.includes(rule.keyword);
+    // postback data を auto_replies にマッチさせて返信 (テキスト経路と共通)。
+    // silent + automation で「返信なしでタグだけ付ける」構成もここで成立する。
+    const { matched: postbackMatched, replyTokenConsumed: postbackReplyTokenConsumed } =
+      await matchAndReply(db, lineClient, friend, postbackData, event.replyToken, {
+        lineAccountId,
+        workerUrl,
+        logContext: 'postback',
+      });
 
-      if (isMatch) {
-        try {
-          const { resolveMetadata } = await import('../services/step-delivery.js');
-          const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-          const resolved = await resolveAutoReplyContent(db, {
-            template_id: rule.template_id,
-            response_type: rule.response_type,
-            response_content: rule.response_content,
-          });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
-          const replyMsg = buildMessage(resolved.messageType, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
+    // イベントバス発火: 専用イベント postback_received。
+    // postback.data を text に載せることで、IF-THEN 自動化の keyword /
+    // keyword_exact 条件がリッチメニューのタップ（タグ付与等）に効く。
+    // message_received を流用しないのは意図的 — 流用すると既存インストールの
+    // message_received スコアリング・catch-all 自動化・送信 Webhook 購読者が
+    // メニュータップで誤発火し、条件側に source を見る術がないため。
+    // なお upsertChatOnMessage は呼ばない: メニュータップは自発メッセージでは
+    // ないので、未対応 inbox を汚さないのが正しい (テキスト経路との意図的な差分)。
+    await fireEvent(db, 'postback_received', {
+      friendId: friend.id,
+      eventData: { text: postbackData, matched: postbackMatched },
+      replyToken: postbackReplyTokenConsumed ? undefined : event.replyToken,
+    }, lineAccessToken, lineAccountId);
 
-          // 送信ログ — Rich Menu 経由の Flex 応答もチャット詳細に残るようにする。
-          // テキスト auto_reply (line ~390) と同じパターン。
-          const { messageToLogPayload: logPayload } = await import('../services/step-delivery.js');
-          const replyPayload = logPayload(replyMsg);
-          await db
-            .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, line_account_id, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', 'auto_reply', ?, ?)`,
-            )
-            .bind(crypto.randomUUID(), friend.id, replyPayload.messageType, replyPayload.content, lineAccountId ?? null, jstNow())
-            .run();
-        } catch (err) {
-          console.error('Failed to send postback reply', err);
-        }
-        break;
-      }
-    }
     return;
   }
 
@@ -517,8 +491,7 @@ async function handleEvent(
 
           for (const other of otherFriends.results) {
             const otherClient = new LineClient(other.channel_access_token);
-            const { buildMessage: bm } = await import('../services/step-delivery.js');
-            await otherClient.pushMessage(other.line_user_id, [bm('flex', JSON.stringify({
+            await otherClient.pushMessage(other.line_user_id, [buildMessage('flex', JSON.stringify({
               type: 'bubble', size: 'giga',
               header: { type: 'box', layout: 'vertical', paddingAll: '20px', backgroundColor: '#fffbeb',
                 contents: [{ type: 'text', text: `${friend.display_name || ''}さんへ`, size: 'lg', weight: 'bold', color: '#1e293b' }],
@@ -557,74 +530,16 @@ async function handleEvent(
       }
     }
 
-    // 自動返信チェック（このアカウントのルール + グローバルルールのみ）
-    // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
-    // The replyToken is only valid for ~1 minute after the message event
-    const autoReplyQuery = lineAccountId
-      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
-      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
-    const autoReplyStmt = db.prepare(autoReplyQuery);
-    const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
-      .all<{
-        id: string;
-        keyword: string;
-        match_type: 'exact' | 'contains';
-        response_type: string;
-        response_content: string;
-        template_id: string | null;
-        is_active: number;
-        created_at: string;
-      }>();
-
-    let matched = false;
-    let replyTokenConsumed = false;
-    for (const rule of autoReplies.results) {
-      const isMatch =
-        rule.match_type === 'exact'
-          ? incomingText === rule.keyword
-          : incomingText.includes(rule.keyword);
-
-      if (isMatch) {
-        // silent タイプ: 返信しないが matched=true にして unread / push を抑止する
-        if (rule.response_type === 'silent') {
-          matched = true;
-          break;
-        }
-
-        try {
-          const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
-          const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-          const resolved = await resolveAutoReplyContent(db, {
-            template_id: rule.template_id,
-            response_type: rule.response_type,
-            response_content: rule.response_content,
-          });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
-          const replyMsg = buildMessage(resolved.messageType, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
-          replyTokenConsumed = true;
-
-          // 送信ログ（replyMessage = 無料）— derive content from the built
-          // reply message so any cleanEmptyNodes / parse-failure fallback is
-          // reflected in the dashboard.
-          const outLogId = crypto.randomUUID();
-          const { messageToLogPayload: logPayload2 } = await import('../services/step-delivery.js');
-          const wbAutoReplyPayload = logPayload2(replyMsg);
-          await db
-            .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', 'auto_reply', ?)`,
-            )
-            .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, jstNow())
-            .run();
-        } catch (err) {
-          console.error('Failed to send auto-reply', err);
-        }
-
-        matched = true;
-        break;
-      }
-    }
+    // 自動返信チェック（このアカウントのルール + グローバルルールのみ）。
+    // silent タイプは返信しないが matched=true になり unread / push を抑止する。
+    const { matched, replyTokenConsumed } = await matchAndReply(
+      db,
+      lineClient,
+      friend,
+      incomingText,
+      event.replyToken,
+      { lineAccountId, workerUrl },
+    );
 
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする
     if (!matched) {
@@ -641,24 +556,6 @@ async function handleEvent(
 
     return;
   }
-}
-
-/**
- * auto_reply 行の content/type を resolve する。template_id が set なら templates
- * から取得、参照切れや NULL のときは inline response_content/response_type を使う。
- */
-async function resolveAutoReplyContent(
-  db: D1Database,
-  rule: { template_id: string | null; response_type: string; response_content: string },
-): Promise<{ messageType: string; content: string }> {
-  if (rule.template_id) {
-    const { getTemplateById } = await import('@line-crm/db');
-    const tpl = await getTemplateById(db, rule.template_id);
-    if (tpl) {
-      return { messageType: tpl.message_type, content: tpl.message_content };
-    }
-  }
-  return { messageType: rule.response_type, content: rule.response_content };
 }
 
 export { webhook };

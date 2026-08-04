@@ -28,6 +28,7 @@ import { buildIntroMessage } from '../services/intro-message.js';
 import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
+import { verifyCallerLineUserId } from '../services/liff-auth.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import type { Env } from '../index.js';
 
@@ -434,6 +435,15 @@ liffRoutes.get('/auth/line', async (c) => {
   if (igParam) qrParams.set('ig', igParam);
   if (igaParam) qrParams.set('iga', igaParam);
   if (iganParam) qrParams.set('igan', iganParam);
+  // Ad click IDs + UTM — without these the PC/QR path loses ad attribution
+  // (same params /auth/line already reads for the OAuth state).
+  if (gclid) qrParams.set('gclid', gclid);
+  if (fbclid) qrParams.set('fbclid', fbclid);
+  if (twclid) qrParams.set('twclid', twclid);
+  if (ttclid) qrParams.set('ttclid', ttclid);
+  if (utmSource) qrParams.set('utm_source', utmSource);
+  if (utmMedium) qrParams.set('utm_medium', utmMedium);
+  if (utmCampaign) qrParams.set('utm_campaign', utmCampaign);
   const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
 
   // Mobile: route through /r/:ref so users get the OS-aware landing page
@@ -1077,15 +1087,15 @@ liffRoutes.get('/api/liff/config', async (c) => {
 
 // ─── Existing LIFF endpoints ────────────────────────────────────
 
-// POST /api/liff/profile - get friend by LINE userId (public, no auth)
+// POST /api/liff/profile - get the authenticated LIFF caller's friend profile
 liffRoutes.post('/api/liff/profile', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId: string }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const lineUserId = await verifyCallerLineUserId(c.req.header('Authorization'), c.env);
+    if (!lineUserId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const friend = await getFriendByLineUserId(c.env.DB, lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }

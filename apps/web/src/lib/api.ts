@@ -40,6 +40,8 @@ export type AffiliateOffer = {
   name: string
   description: string | null
   rewardAmount: number | null
+  rewardMiles: number
+  mileageProgramId: string
   lineAccountId: string | null
   tagId: string | null
   scenarioId: string | null
@@ -173,6 +175,87 @@ export type FriendListParams = {
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
+export type FriendFormSubmission = {
+  id: string
+  formId: string
+  formName: string
+  fields: Array<{ name: string; label: string }>
+  data: Record<string, unknown>
+  createdAt: string
+}
+export type FriendDetail = FriendWithTags & { formSubmissions: FriendFormSubmission[] }
+export type MileageSummary = {
+  programId: string
+  programName: string
+  available: number
+  pending: number
+  lifetimeEarned: number
+  spent: number
+}
+export type MileageHistoryItem = {
+  id: string
+  entryType: 'grant' | 'reversal' | 'spend' | 'expiration' | 'adjustment'
+  status: 'pending' | 'available' | 'void'
+  amount: number
+  reason: string
+  source: string
+  sourceEventId: string | null
+  occurredAt: string
+}
+export type MileageRule = {
+  id: string
+  name: string
+  eventType: string
+  source: string | null
+  amount: number
+  initialStatus: 'pending' | 'available'
+  conditions: {
+    dailyCapActions?: number
+    uniquePerSubject?: boolean
+    uniquePerSubjectPerDay?: boolean
+    ignoreMultiplier?: boolean
+    beneficiary?: 'actor' | 'referrer'
+    uniquePerReferredFriend?: boolean
+    uniquePerReferredFriendPerSubject?: boolean
+  }
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+export type MileageAdminMember = {
+  identityKey: string
+  primaryFriendId: string
+  displayName: string
+  pictureUrl: string | null
+  accountCount: number
+  accountNames: string[]
+  available: number
+  pending: number
+  lifetimeEarned: number
+  actionCount: number
+  messageCount: number
+  linkClickCount: number
+  formCount: number
+  bookingCount: number
+  webinarCount: number
+  instagramCount: number
+  followingDays: number
+  unfollowCount: number
+  referralMiles: number
+  qualityReferralCount: number
+  lastActivityAt: string | null
+}
+export type MileageAdminOverview = {
+  summary: {
+    totalMembers: number
+    totalAvailable: number
+    activeMembers30d: number
+    totalActions: number
+    queuedEvents: number
+  }
+  members: MileageAdminMember[]
+  pagination: { total: number; limit: number; offset: number }
+}
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
   latestIncomingMessage: { content: string; messageType: string; createdAt: string } | null
@@ -199,7 +282,11 @@ export const api = {
       )
     },
     get: (id: string) =>
-      fetchApi<ApiResponse<FriendWithTags>>(`/api/friends/${id}`),
+      fetchApi<ApiResponse<FriendDetail>>(`/api/friends/${id}`),
+    mileage: (id: string, limit = 10) =>
+      fetchApi<ApiResponse<{ summary: MileageSummary; history: MileageHistoryItem[] }>>(
+        `/api/friends/${id}/mileage?limit=${limit}`,
+      ),
     count: (params?: { accountId?: string }) => {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
       return fetchApi<ApiResponse<{ count: number }>>('/api/friends/count' + query)
@@ -225,6 +312,16 @@ export const api = {
     create: (data: { name: string; color: string }) =>
       fetchApi<ApiResponse<Tag>>('/api/tags', {
         method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateMileage: (id: string, data: {
+      rewardMiles: number
+      referralRewardMiles: number
+      multiplierBps: number | null
+      multiplierPriority: number
+    }) =>
+      fetchApi<ApiResponse<{ tag: Tag; queued: number }>>(`/api/tags/${id}/mileage`, {
+        method: 'PATCH',
         body: JSON.stringify(data),
       }),
     delete: (id: string) =>
@@ -892,6 +989,37 @@ export const api = {
         `/api/friends/${friendId}/score`,
       ),
   },
+  mileage: {
+    overview: (params?: { accountId?: string; search?: string; limit?: number; offset?: number }) => {
+      const query = new URLSearchParams()
+      if (params?.accountId) query.set('accountId', params.accountId)
+      if (params?.search) query.set('search', params.search)
+      if (params?.limit !== undefined) query.set('limit', String(params.limit))
+      if (params?.offset !== undefined) query.set('offset', String(params.offset))
+      const suffix = query.toString() ? `?${query.toString()}` : ''
+      return fetchApi<ApiResponse<MileageAdminOverview>>(`/api/mileage/overview${suffix}`)
+    },
+    rules: () => fetchApi<ApiResponse<MileageRule[]>>('/api/mileage/rules'),
+    createRule: (data: {
+      name: string
+      eventType: string
+      source?: string | null
+      amount: number
+      initialStatus?: 'pending' | 'available'
+      conditions?: MileageRule['conditions'] | null
+    }) => fetchApi<ApiResponse<MileageRule>>('/api/mileage/rules', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+    updateRule: (id: string, data: Partial<Pick<MileageRule,
+      'name' | 'eventType' | 'source' | 'amount' | 'initialStatus' | 'conditions' | 'isActive'
+    >>) => fetchApi<ApiResponse<MileageRule>>(`/api/mileage/rules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+    deleteRule: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/mileage/rules/${id}`, { method: 'DELETE' }),
+  },
   webhooks: {
     incoming: {
       list: () =>
@@ -1381,6 +1509,7 @@ export const api = {
       name: string
       description?: string | null
       rewardAmount?: number
+      rewardMiles?: number
       lineAccountId?: string | null
       tagId?: string | null
       scenarioId?: string | null
@@ -1393,6 +1522,7 @@ export const api = {
       name: string
       description: string | null
       rewardAmount: number
+      rewardMiles: number
       lineAccountId: string | null
       tagId: string | null
       scenarioId: string | null
@@ -1525,6 +1655,23 @@ export interface BookingRequest {
   friend_name: string | null;
 }
 
+export interface BookingAvailabilityRule {
+  id: string;
+  weekday: number;
+  start_time: string;
+  end_time: string;
+  is_active: number;
+}
+
+export interface BookingGoogleCalendarConnection {
+  id: string;
+  calendar_id: string;
+  auth_type: string;
+  is_active: number;
+  last_verified_at: string | null;
+  last_error: string | null;
+}
+
 function withAccount(path: string, accountId: string): string {
   return `${path}${path.includes('?') ? '&' : '?'}account_id=${encodeURIComponent(accountId)}`;
 }
@@ -1614,6 +1761,34 @@ export const bookingApi = {
     fetchApi<{ inserted: number }>(
       withAccount(`/api/booking/admin/staff/${staffId}/shifts/generate`, accountId),
       { method: 'POST', body: JSON.stringify(body) },
+    ),
+  getAvailabilityRules: (accountId: string, staffId: string) =>
+    fetchApi<{ rules: BookingAvailabilityRule[] }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/availability-rules`, accountId),
+    ),
+  putAvailabilityRules: (
+    accountId: string,
+    staffId: string,
+    rules: Array<{ weekday: number; start_time: string; end_time: string }>,
+  ) =>
+    fetchApi<{ ok: true; count: number }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/availability-rules`, accountId),
+      { method: 'PUT', body: JSON.stringify({ rules }) },
+    ),
+  getGoogleCalendar: (accountId: string, staffId: string) =>
+    fetchApi<{
+      connection: BookingGoogleCalendarConnection | null;
+      service_account: { configured: boolean; email: string | null };
+    }>(withAccount(`/api/booking/admin/staff/${staffId}/google-calendar`, accountId)),
+  putGoogleCalendar: (accountId: string, staffId: string, calendarId: string) =>
+    fetchApi<{ ok: true; calendar_id: string; last_verified_at: string }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/google-calendar`, accountId),
+      { method: 'PUT', body: JSON.stringify({ calendar_id: calendarId }) },
+    ),
+  deleteGoogleCalendar: (accountId: string, staffId: string) =>
+    fetchApi<{ ok: true }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/google-calendar`, accountId),
+      { method: 'DELETE' },
     ),
   // Requests
   listRequests: (accountId: string, status: string = 'requested') =>
@@ -1847,18 +2022,71 @@ export type WebinarInput = Partial<Omit<Webinar, 'id' | 'createdAt' | 'updatedAt
 export type WebinarSakuraComment = { id?: string; atSeconds: number; authorName: string; body: string }
 
 export type WebinarAnalytics = {
+  summary: {
+    reservations: number
+    viewers: number
+    registeredAndJoined: number
+    watched5m: number
+    watched15m: number
+    completed: number
+    avgWatchedSeconds: number
+    ctaClicks: number
+    formSubmissions: number
+  }
+  daily: Array<{
+    date: string
+    reservations: number
+    viewers: number
+    ctaClicks: number
+    formSubmissions: number
+  }>
+  participants: Array<{
+    friendId: string
+    friendName: string | null
+    pictureUrl: string | null
+    sessions: number
+    firstJoinedAt: string
+    latestJoinedAt: string
+    maxWatchedSeconds: number
+    ctaClickedAt: string | null
+    registered: boolean
+    formSubmittedAt: string | null
+  }>
   sessions: Array<{ sessionStartAt: number; viewers: number; avgWatchedSeconds: number; ctaClicks: number }>
   dropoff: Array<{ bucketStart: number; viewers: number }>
+  formFunnel: {
+    ctaImpressions: number
+    ctaClicks: number
+    formOpens: number
+    formStarts: number
+    submitAttempts: number
+    submitSuccesses: number
+    submitErrors: number
+    fieldCompletions: Array<{ fieldName: string; users: number }>
+  }
 }
 
 export type WebinarUserComment = {
   id: string
   friendId: string
   friendName: string | null
+  pictureUrl: string | null
   sessionStartAt: number
   atSeconds: number
   body: string
   createdAt: string
+}
+
+export type WebinarCtaCard = {
+  id?: string
+  atSeconds: number
+  kind: 'form' | 'url'
+  title: string
+  body: string | null
+  buttonLabel: string
+  autoOpen: boolean
+  formId: string | null
+  url: string | null
 }
 
 export const webinarApi = {
@@ -1875,6 +2103,16 @@ export const webinarApi = {
     fetchApi<{ data: { count: number } }>(`/api/webinars/${id}/comments`, {
       method: 'PUT',
       body: JSON.stringify({ comments: comments.map(({ atSeconds, authorName, body }) => ({ atSeconds, authorName, body })) }),
+    }),
+  ctas: (id: string) => fetchApi<{ data: WebinarCtaCard[] }>(`/api/webinars/${id}/ctas`),
+  saveCtas: (id: string, ctas: WebinarCtaCard[]) =>
+    fetchApi<{ data: { count: number } }>(`/api/webinars/${id}/ctas`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        ctas: ctas.map(({ atSeconds, kind, title, body, buttonLabel, autoOpen, formId, url }) => ({
+          atSeconds, kind, title, body, buttonLabel, autoOpen, formId, url,
+        })),
+      }),
     }),
   analytics: (id: string) => fetchApi<{ data: WebinarAnalytics }>(`/api/webinars/${id}/analytics`),
   userComments: (id: string) =>

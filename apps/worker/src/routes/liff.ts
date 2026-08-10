@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import {
   getFriendByLineUserId,
+  getFriendByLineUserIdForAccount,
   createUser,
   getUserByEmail,
   linkFriendToUser,
@@ -29,8 +30,10 @@ import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
+import { awardActivityMileage } from '../services/activity-mileage.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import type { Env } from '../index.js';
+import { verifyCrossAccountToken } from '../lib/cross-account-token.js';
 
 
 // OAuth state base64 helpers. btoa() only accepts Latin-1, so a single
@@ -93,6 +96,17 @@ async function linkIgIgsid(
     );
     return false;
   }
+
+  // A successful IG -> LINE return is itself an engagement milestone. The
+  // stable identity/subject keys make repeated LIFF visits harmless.
+  await awardActivityMileage(c.env.DB, {
+    eventType: 'instagram_line_returned',
+    source: 'instagram',
+    sourceEventId: `${friendId}:${igParam}`,
+    friendId,
+    subjectKey: igParam,
+    metadata: { igsid: igParam },
+  });
 
   if (c.env.IG_HARNESS_URL && c.env.IG_HARNESS_LINK_SECRET) {
     c.executionCtx.waitUntil(
@@ -1123,6 +1137,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       displayName?: string | null;
       ref?: string;
       existingUuid?: string;
+      crossAccountToken?: string;
       ig?: string;
       iga?: string;
       igan?: string;
@@ -1142,13 +1157,17 @@ liffRoutes.post('/api/liff/link', async (c) => {
     }
 
     let verifyRes: Response | null = null;
+    let matchedLoginChannelId: string | null = null;
     for (const channelId of loginChannelIds) {
       verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ id_token: body.idToken, client_id: channelId }),
       });
-      if (verifyRes.ok) break;
+      if (verifyRes.ok) {
+        matchedLoginChannelId = channelId;
+        break;
+      }
     }
 
     if (!verifyRes?.ok) {
@@ -1160,9 +1179,37 @@ liffRoutes.post('/api/liff/link', async (c) => {
     const email = verified.email || null;
 
     const db = c.env.DB;
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    // id_token を検証できたログインチャネル = ユーザーが開いている LIFF のアカウント。
+    // friend 行とプッシュ先をそのアカウントに揃える (同一プロバイダーの兄弟アカウント
+    // では line_user_id が同一で、無指定の先頭一致だと別アカウントに吸われるため)。
+    const matchedAccount = matchedLoginChannelId
+      ? dbAccounts.find((a) => a.login_channel_id === matchedLoginChannelId) ?? null
+      : null;
+    const friend = await getFriendByLineUserIdForAccount(
+      db, lineUserId, matchedAccount?.id ?? null,
+    );
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    let linkedUserId = (friend as unknown as Record<string, unknown>).user_id as string | null;
+    if (body.crossAccountToken) {
+      const crossAccount = await verifyCrossAccountToken(
+        c.env.LINE_CHANNEL_SECRET,
+        body.crossAccountToken,
+      );
+      if (!crossAccount || !matchedAccount || crossAccount.targetAccountId !== matchedAccount.id) {
+        return c.json({ success: false, error: 'Invalid cross-account token' }, 400);
+      }
+      const targetUser = await db
+        .prepare('SELECT id FROM users WHERE id = ?')
+        .bind(crossAccount.userId)
+        .first<{ id: string }>();
+      if (!targetUser) {
+        return c.json({ success: false, error: 'Cross-account user not found' }, 400);
+      }
+      await linkFriendToUser(db, friend.id, crossAccount.userId);
+      linkedUserId = crossAccount.userId;
     }
 
     // IG cross-link: runs regardless of already-linked vs new-link branch so
@@ -1171,7 +1218,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
     const igLinkOk = await linkIgIgsid(c, friend.id, body.ig || '');
     if (igLinkOk) await saveIgAccountMeta(db, friend.id, body.iga || '', body.igan || '');
 
-    if ((friend as unknown as Record<string, unknown>).user_id) {
+    if (linkedUserId) {
       // Still save ref even if already linked (but never persist xh: tokens as ref_code)
       if (body.ref && !body.ref.startsWith('xh:')) {
         await db.prepare('UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL')
@@ -1194,7 +1241,9 @@ liffRoutes.post('/api/liff/link', async (c) => {
         } catch { /* silent */ }
       }
       if (body.ref) {
-        await applyRefAttribution(c, body.ref, friend, lineUserId);
+        await applyRefAttribution(c, body.ref, friend, lineUserId, {
+          accountChannelId: matchedAccount?.channel_id ?? null,
+        });
       }
       // X Harness token resolution for already-linked friends
       if (body.ref && body.ref.startsWith('xh:')) {
@@ -1223,7 +1272,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       }
       return c.json({
         success: true,
-        data: { userId: (friend as unknown as Record<string, unknown>).user_id, alreadyLinked: true },
+        data: { userId: linkedUserId, alreadyLinked: true },
       });
     }
 
@@ -1261,7 +1310,9 @@ liffRoutes.post('/api/liff/link', async (c) => {
       } catch { /* silent */ }
 
       // Apply ref attribution (tag + scenario push) for newly-linked friends
-      await applyRefAttribution(c, body.ref, friend, lineUserId);
+      await applyRefAttribution(c, body.ref, friend, lineUserId, {
+        accountChannelId: matchedAccount?.channel_id ?? null,
+      });
     }
 
     // X Harness token resolution: ref starting with "xh:" links X account to LINE friend

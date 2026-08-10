@@ -168,7 +168,7 @@ export default function DashboardPage() {
           api.broadcasts.list(),
           api.templates.list(),
           api.automations.list(),
-          api.scoring.rules(),
+          api.mileage.rules(),
         ])
 
         setStats({
@@ -315,7 +315,7 @@ export default function DashboardPage() {
           }
         />
         <StatCard
-          title="スコアリングルール数"
+          title="マイル付与ルール数"
           value={stats.scoringRuleCount}
           loading={loading}
           href="/scoring"

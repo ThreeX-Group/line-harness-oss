@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -18,6 +18,7 @@ import { updateFriendFollowStatus } from '../src/friends.js';
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BENIGN = /duplicate column name|already exists/i;
+const FIXED_NOW = new Date('2026-08-10T00:00:00.000+09:00');
 
 function execSafe(db: Database.Database, sql: string) {
   for (const statement of sql.split(/;\s*(?:\r?\n|$)/).map((item) => item.trim()).filter(Boolean)) {
@@ -70,8 +71,15 @@ describe('configurable mileage rules', () => {
   let db: D1Database;
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(FIXED_NOW);
     sqlite = setupSqlite();
     db = asD1(sqlite);
+  });
+
+  afterEach(() => {
+    sqlite.close();
+    vi.useRealTimers();
   });
 
   it('enforces the message daily cap across two LINE accounts for one user', async () => {

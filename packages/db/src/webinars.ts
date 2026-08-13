@@ -695,14 +695,18 @@ export interface WebinarRegistration {
   created_at: string;
 }
 
-/** 予約を upsert する (同一 friend×セッションは冪等) */
+/**
+ * 予約を upsert する (同一 friend×セッションは冪等)。
+ * 新規作成時だけ true。重複リクエストでは false を返し、呼び出し元が
+ * 受付確認を二重送信しないために使う。
+ */
 export async function upsertWebinarRegistration(
   db: D1Database,
   webinarId: string,
   friendId: string,
   sessionStartAt: number,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const result = await db
     .prepare(
       `INSERT OR IGNORE INTO webinar_registrations
          (id, webinar_id, friend_id, session_start_at, notified_at, created_at)
@@ -710,6 +714,7 @@ export async function upsertWebinarRegistration(
     )
     .bind(crypto.randomUUID(), webinarId, friendId, sessionStartAt, jstNow())
     .run();
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 /** friend の未来セッション予約 (直近1件) */

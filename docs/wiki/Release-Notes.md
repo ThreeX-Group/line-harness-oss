@@ -1,5 +1,31 @@
 # Release Notes
 
+## v0.21.0 (2026-08-14)
+
+### Added — Live CTA consultation booking
+
+- After submitting a webinar CTA form, viewers can choose a real-time available consultation slot without leaving the live screen.
+- Availability starts from the staff member's recurring LINE Harness hours, then removes dated overrides, existing bookings, Google Calendar busy periods, and slots inside the lead-time window.
+- A confirmed booking creates a Google Calendar event and Google Meet link, registers the consultation, and schedules LINE reminders for the previous day and one hour before the meeting.
+- Staff can connect their own Google account through OAuth. Service-account keys and calendar sharing are no longer required for new installations.
+- OAuth requests only `calendar.events` and `calendar.events.freebusy`, avoiding unrelated Drive or YouTube grants.
+- Setup and troubleshooting are documented in [Google Calendar & Webinar Booking](28-Google-Calendar-and-Webinar-Booking.md).
+
+### Added — Messaging and inquiry improvements
+
+- Friend-specific scenario and auto-reply deliveries can replace `{{liff_id}}` with the sending account's LIFF ID.
+- Sending `マイル` to any connected LINE account returns the user's mileage wallet through a quota-saving reply message.
+- Media inquiries can be stored in D1 with notification delivery status for operational follow-up.
+
+### Fixed
+
+- Immediate first-step delivery now evaluates the same step conditions as scheduled delivery.
+- The chat list uses the true latest message for previews, ordering, and pagination, including messages sent through the LINE Harness proxy.
+
+### Database
+
+- Additive migrations `067_mileage_keyword_auto_reply.sql` and `068_media_inquiries.sql`.
+
 ## v0.20.0 (2026-08-10)
 
 ### Added — Mileage economy

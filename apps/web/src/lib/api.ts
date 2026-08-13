@@ -1819,7 +1819,13 @@ export const bookingApi = {
     fetchApi<{
       connection: BookingGoogleCalendarConnection | null;
       service_account: { configured: boolean; email: string | null };
+      oauth: { configured: boolean };
     }>(withAccount(`/api/booking/admin/staff/${staffId}/google-calendar`, accountId)),
+  startGoogleCalendarOAuth: (accountId: string, staffId: string) =>
+    fetchApi<{ authorization_url: string }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/google-calendar/oauth/start`, accountId),
+      { method: 'POST' },
+    ),
   putGoogleCalendar: (accountId: string, staffId: string, calendarId: string) =>
     fetchApi<{ ok: true; calendar_id: string; last_verified_at: string }>(
       withAccount(`/api/booking/admin/staff/${staffId}/google-calendar`, accountId),

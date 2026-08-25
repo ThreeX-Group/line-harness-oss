@@ -61,16 +61,49 @@ function googleOAuthRedirectUri(requestUrl: string): string {
   return new URL(GOOGLE_OAUTH_CALLBACK_PATH, requestUrl).toString();
 }
 
-function adminCalendarReturnUrl(
+/**
+ * `adminOrigin` comes from the browser's `Origin` request header when the
+ * admin UI kicked off the OAuth flow (see the `signGoogleOAuthState` call
+ * site below) — an Origin header is, by HTTP spec, always scheme+host only,
+ * never a path. `env.ADMIN_PUBLIC_URL` is the opposite: since the
+ * three-surfaces bundle (2026-08-24) it carries the admin's basePath (e.g.
+ * `https://tenant.example/console`) for single-origin installs where admin now lives
+ * on a subpath of the same origin the Worker itself serves.
+ *
+ * Exported for direct unit testing (codex review round 2: `new URL(path,
+ * base)` REPLACES `base`'s pathname entirely for a path-absolute `path` —
+ * building this the naive way silently dropped ADMIN_PUBLIC_URL's own path,
+ * sending a single-origin install's Google Calendar connect flow back to the
+ * root — the LIFF app, not admin — instead of the settings page it started
+ * from).
+ */
+export function adminCalendarReturnUrl(
   env: Env['Bindings'],
   staffId: string | null,
   result: 'connected' | 'denied' | 'error',
   adminOrigin?: string,
 ): string {
-  const url = new URL(
-    '/booking/staff/shifts',
-    adminOrigin ?? env.ADMIN_PUBLIC_URL ?? 'https://your-admin.pages.dev',
-  );
+  const adminPublicUrl = (() => {
+    try {
+      return env.ADMIN_PUBLIC_URL ? new URL(env.ADMIN_PUBLIC_URL) : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  // Prefer ADMIN_PUBLIC_URL (it carries the basePath) whenever it's on the
+  // same origin as the captured Origin header — true for every single-origin install,
+  // where both ultimately name the same consolidated origin. Different
+  // origin (legacy separate-Pages admin) or no ADMIN_PUBLIC_URL at all →
+  // fall back to adminOrigin, then ADMIN_PUBLIC_URL, then the historical
+  // hardcoded default — same fallback order as before, just base-selection,
+  // not URL construction.
+  const base =
+    adminOrigin && adminPublicUrl && adminOrigin === adminPublicUrl.origin
+      ? env.ADMIN_PUBLIC_URL!
+      : (adminOrigin ?? env.ADMIN_PUBLIC_URL ?? 'https://your-admin.pages.dev');
+  const baseUrl = new URL(base);
+  const basePath = baseUrl.pathname === '/' ? '' : baseUrl.pathname.replace(/\/+$/, '');
+  const url = new URL(`${basePath}/booking/staff/shifts`, baseUrl.origin);
   if (staffId) url.searchParams.set('staff_id', staffId);
   url.searchParams.set('google', result);
   return url.toString();

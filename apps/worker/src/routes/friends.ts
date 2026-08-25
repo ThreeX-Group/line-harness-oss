@@ -600,14 +600,19 @@ friends.post('/api/friends/:id/messages', async (c) => {
 
     const { LineClient } = await import('@line-crm/line-sdk');
     // Resolve access token from friend's account (multi-account support)
-    let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-    const friendAccountId =
+    // 送信アカウントを1回だけ決めて、トークンと**リンクの持ち主**の両方に同じ行を使う。
+    // トークンだけ差し替えて ID を取りこぼすと、送信は正しいアカウントから出るのに
+    // 本文中の URL は「持ち主なし」のトラッキングリンクとして登録され、
+    // アカウント単位の OGP・LIFF フォールバックと分析が送信元と食い違う
+    // （Codex review round 3 の指摘）。
+    const { getLineAccountById, resolveDefaultLineAccount } = await import('@line-crm/db');
+    const rawFriendAccountId =
       ((friend as unknown as Record<string, unknown>).line_account_id as string | null) ?? null;
-    if (friendAccountId) {
-      const { getLineAccountById } = await import('@line-crm/db');
-      const account = await getLineAccountById(db, friendAccountId);
-      if (account) accessToken = account.channel_access_token;
-    }
+    const sendAccount = rawFriendAccountId
+      ? await getLineAccountById(db, rawFriendAccountId)
+      : await resolveDefaultLineAccount(db);
+    const friendAccountId = sendAccount?.id ?? rawFriendAccountId;
+    const accessToken = sendAccount?.channel_access_token || c.env.LINE_CHANNEL_ACCESS_TOKEN;
     const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
 

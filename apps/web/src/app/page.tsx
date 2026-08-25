@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
+import { getApiBase } from '@/lib/api-base'
 import CcPromptButton from '@/components/cc-prompt-button'
 import { useAccount } from '@/contexts/account-context'
 
@@ -80,7 +81,7 @@ function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }
 function FriendAddLinkCard() {
   const { selectedAccount } = useAccount()
   const [copied, setCopied] = useState(false)
-  const base = (process.env.NEXT_PUBLIC_API_URL ?? '').replace(/\/$/, '')
+  const base = (getApiBase() ?? '').replace(/\/$/, '')
   const link = selectedAccount
     ? `${base}/r/dashboard?account=${encodeURIComponent(selectedAccount.channelId)}`
     : `${base}/r/dashboard`

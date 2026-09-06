@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS "broadcasts" (
   account_ids        TEXT CHECK (account_ids IS NULL OR json_valid(account_ids)),
   dedup_priority     TEXT CHECK (dedup_priority IS NULL OR json_valid(dedup_priority)),
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids))
-, dedup_progress TEXT, batch_lock_at TEXT, track_links INTEGER NOT NULL DEFAULT 1);
+, dedup_progress TEXT, batch_lock_at TEXT, track_links INTEGER NOT NULL DEFAULT 1, last_error TEXT);
 
 CREATE TABLE IF NOT EXISTS calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -714,7 +714,8 @@ CREATE TABLE IF NOT EXISTS notification_rules (
   channels     TEXT NOT NULL DEFAULT '["webhook"]',
   is_active    INTEGER NOT NULL DEFAULT 1,
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  line_account_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -726,7 +727,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   channel         TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
   metadata        TEXT,
-  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  line_account_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS operators (
@@ -1332,6 +1334,8 @@ CREATE INDEX IF NOT EXISTS idx_mileage_rules_match
   ON mileage_rules(program_id, event_type, source, is_active);
 
 CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_event_account ON notifications (event_type, line_account_id, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications (status);
 

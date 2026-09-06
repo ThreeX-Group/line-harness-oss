@@ -200,7 +200,12 @@ function BroadcastList() {
                         </div>
                         <p className="mt-0.5 text-xs text-kumo-subtle">{broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}</p>
                       </Table.Cell>
-                      <Table.Cell><Badge variant={status.variant} appearance="dot">{status.label}</Badge></Table.Cell>
+                      <Table.Cell>
+                        <Badge variant={status.variant} appearance="dot">{status.label}</Badge>
+                        {broadcast.lastError ? (
+                          <p className="mt-1 max-w-56 text-xs text-kumo-danger" title={broadcast.lastError}>{broadcast.lastError}</p>
+                        ) : null}
+                      </Table.Cell>
                       <Table.Cell>{isDedup ? `重複除外${tagName ? `：${tagName}` : ''}` : broadcast.targetType === 'all' ? '全員' : tagName ? `タグ：${tagName}` : 'タグ指定'}</Table.Cell>
                       <Table.Cell className="text-kumo-subtle">{formatDatetime(broadcast.scheduledAt)}</Table.Cell>
                       <Table.Cell className="text-kumo-subtle">{formatDatetime(broadcast.sentAt)}</Table.Cell>

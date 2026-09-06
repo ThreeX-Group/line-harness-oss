@@ -41,9 +41,11 @@ import { scoring } from './routes/scoring.js';
 import { templates } from './routes/templates.js';
 import { chats } from './routes/chats.js';
 import { conversations } from './routes/conversations.js';
-// notifications ルート (notification_rules CRUD + notifications 一覧) は
-// インボックス機能 (/api/inbox/unanswered) に置き換えたため削除。
-// DB テーブル notification_rules / notifications は archive 目的で残してある。
+// notifications ルート: 一度インボックス機能 (/api/inbox/unanswered) に置き換えて
+// 削除したが、クォータ不足通知 (services/quota-alert.ts, 2026-09-01 事故対応) が
+// notifications / notification_rules に書き込むようになったため再マウント。
+// 書き込み側だけ復活して読み手が居ないと「通知したつもり」になるのが最悪のため。
+import { notifications } from './routes/notifications.js';
 import { stripe } from './routes/stripe.js';
 import { health } from './routes/health.js';
 import { automations } from './routes/automations.js';
@@ -223,6 +225,7 @@ app.route('/', reminders);
 app.route('/', scoring);
 app.route('/', templates);
 app.route('/', chats);
+app.route('/', notifications);
 app.route('/', conversations);
 app.route('/', stripe);
 app.route('/', health);

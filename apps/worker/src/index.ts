@@ -95,6 +95,8 @@ export type Env = {
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
+    MEET_CALLBACK_SECRET?: string;
+    STRIPE_WEBHOOK_SECRET?: string;
     LEGACY_API_KEY?: string;
     LIFF_URL: string;
     LINE_CHANNEL_ID: string;
@@ -137,6 +139,9 @@ export type Env = {
     // the Worker keeps a refresh token and never needs a service-account key.
     GOOGLE_OAUTH_CLIENT_ID?: string;
     GOOGLE_OAUTH_CLIENT_SECRET?: string;
+    GOOGLE_CALENDAR_BROKER_URL?: string;
+    GOOGLE_CALENDAR_TENANT_ID?: string;
+    GOOGLE_CALENDAR_BROKER_SECRET?: string;
     /** Days to keep messages_log rows. Unset/invalid = keep forever. */
     LOG_RETENTION_DAYS?: string;
     /** Max friends (is_following=1). Unset/invalid = unlimited. */
